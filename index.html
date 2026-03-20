@@ -288,10 +288,20 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentMedState = 'off';
   let selectedEl = null;
   let timerInt = null;
+  let remaining = 0;
   let startTimestamp = null;
   let editNoteIndex = null;
 
   /* ===== PROTOCOL ===== */
+  // Parse duration in seconds from label: 5min→300, 2min→120, 30s→30, else 0
+  function parseDur(label) {
+    const mMin = label.match(/(\d+)min/i);
+    const mSec = label.match(/(\d+)s(?:[_\b]|$)/i);
+    if (mMin) return parseInt(mMin[1]) * 60;
+    if (mSec) return parseInt(mSec[1]);
+    return 0;
+  }
+
   const OFF_TRIALS = [
     'OFF_5min_Sitting',
     'OFF_5min_Standing',
@@ -327,22 +337,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const pfx = state === 'off' ? 'OFF' : 'ON';
     const steps = [];
 
+    const item = label => ({ type:'item', label, dur: parseDur(label) });
+
     steps.push({ type:'header', label: `── ${pfx.toUpperCase()} · Baseline Sitting/Standing/Walking` });
-    source.filter(t => t.includes('5min')).forEach(t => steps.push({ type:'item', label:t }));
+    source.filter(t => t.includes('5min')).forEach(t => steps.push(item(t)));
 
     steps.push({ type:'header', label: `── ${pfx.toUpperCase()} · Giladi Protocol` });
-    source.filter(t => t.includes('Giladi')).forEach(t => steps.push({ type:'item', label:t }));
+    source.filter(t => t.includes('Giladi')).forEach(t => steps.push(item(t)));
 
     steps.push({ type:'header', label: `── ${pfx.toUpperCase()} · VR Baselines` });
-    source.filter(t => t.includes('VR')).forEach(t => steps.push({ type:'item', label:t }));
+    source.filter(t => t.includes('VR')).forEach(t => steps.push(item(t)));
 
     steps.push({ type:'header', label: `── ${pfx.toUpperCase()} · Trials 1–10` });
-    // interleaved 30s + Trial blocks
     for (let i = 1; i <= 10; i++) {
       const t30 = source.find(t => t === `${pfx}_30s_T${i}`);
       const tTr = source.find(t => t === `${pfx}_Trial${i}`);
-      if (t30) steps.push({ type:'item', label:t30 });
-      if (tTr) steps.push({ type:'item', label:tTr });
+      if (t30) steps.push(item(t30));
+      if (tTr) steps.push(item(tTr));
     }
 
     return steps;
@@ -363,9 +374,13 @@ document.addEventListener('DOMContentLoaded', () => {
         li.textContent = step.label;
       } else {
         li.className = 'trial-item';
-        li.textContent = step.label;
+        const dur = step.dur || 0;
+        const durLabel = dur >= 60 ? `${dur/60}min` : dur > 0 ? `${dur}s` : '';
+        const badge = durLabel ? `<span style="margin-left:auto; font-size:.58rem; background:var(--orange-lt); color:var(--orange); border:1px solid var(--orange-bd); border-radius:3px; padding:1px 5px; white-space:nowrap;">⏱ ${durLabel}</span>` : '';
+        li.innerHTML = `<span>${step.label}</span>${badge}`;
         li.dataset.idx   = idx;
         li.dataset.label = step.label;
+        li.dataset.dur   = dur;
         li.addEventListener('click', handleClick);
       }
       trialList.appendChild(li);
@@ -434,6 +449,46 @@ document.addEventListener('DOMContentLoaded', () => {
     logEntry({ trial: currentTrialName, state: currentMedState, event: 'Start', notes: $('notesInput').value });
     updateUIStates();
     $('activeSelectionDisplay').classList.add('timer-active');
+
+    const durVal = parseInt(selectedEl.dataset.dur) || 0;
+    if (durVal > 0) {
+      remaining = durVal;
+      $('countdownDisplay').classList.remove('hidden');
+      $('countdownDisplay').textContent = fmtCountdown(remaining);
+      timerInt = setInterval(() => {
+        remaining--;
+        $('countdownDisplay').textContent = fmtCountdown(remaining);
+        if (remaining <= 0) {
+          clearInterval(timerInt);
+          playChime();
+          handleStop();
+        }
+      }, 1000);
+    } else {
+      $('countdownDisplay').classList.add('hidden');
+    }
+  }
+
+  function fmtCountdown(s) {
+    const m = Math.floor(s / 60), sec = s % 60;
+    return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  }
+
+  function playChime() {
+    try {
+      const ctx = getAudioCtx();
+      const notes = [[880,0,.22,.45],[1046.5,.25,.22,.45],[1318.5,.5,.55,.40]];
+      const now = ctx.currentTime;
+      notes.forEach(([freq,offset,dur,vol]) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type='sine'; osc.frequency.setValueAtTime(freq, now+offset);
+        gain.gain.setValueAtTime(0,now+offset);
+        gain.gain.linearRampToValueAtTime(vol,now+offset+.02);
+        gain.gain.exponentialRampToValueAtTime(.001,now+offset+dur);
+        osc.start(now+offset); osc.stop(now+offset+dur+.05);
+      });
+    } catch(e) {}
   }
 
   function handleStop() {
